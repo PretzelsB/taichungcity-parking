@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>台中找車位 (V8 直連版)</title>
+    <title>台中找車位 (新版API修復)</title>
     
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.css" />
@@ -37,14 +37,14 @@
 </head>
 <body>
     <div class="search-container">
-        <input type="text" id="search-input" class="search-input" placeholder="輸入地點..." onkeypress="handleEnter(event)">
+        <input type="text" id="search-input" class="search-input" placeholder="輸入地點 (如: 勤美)..." onkeypress="handleEnter(event)">
         <button class="search-btn" onclick="searchLocation()"><i class="fas fa-search"></i></button>
     </div>
     <div class="gps-btn" onclick="locateUser()"><i class="fas fa-crosshairs"></i></div>
     
     <div id="info-panel">
         <div style="margin-bottom:10px;">
-            <strong style="font-size:16px;">🅿️ 台中停車通 V8</strong>
+            <strong style="font-size:16px;">🅿️ 台中停車通 (新版API)</strong>
         </div>
         
         <div style="margin-bottom:10px;">
@@ -80,9 +80,11 @@
         const greenIcon = new L.Icon({ iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png', shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png', iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41] });
         const redIcon = new L.Icon({ iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png', shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png', iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41] });
 
-        // API 網址
+        // --- 關鍵修改：使用你找到的新版 API 網址 ---
+        // 停車場 (舊的如果還能用就留著，不然要找新的)
         const API_LOTS = 'https://datacenter.taichung.gov.tw/swagger/OpenData/e7b85d37-252f-45b0-8c2e-40439641770e';
-        const API_ROADSIDE = 'https://datacenter.taichung.gov.tw/swagger/OpenData/791b8a4b-9e4a-4467-93b5-77cb63a4369f';
+        // 路邊停車 (你找到的正確新網址！)
+        const API_ROADSIDE = 'https://newdatacenter.taichung.gov.tw/api/v1/no-auth/resource.download?rid=c8188c50-1971-4761-bd60-307d435e53a6';
 
         let parkingData = []; 
 
@@ -91,15 +93,15 @@
             const text = document.getElementById('msg-' + type);
             text.textContent = msg;
             if (status === 'loading') { dot.style.background = 'orange'; text.style.color = 'orange'; }
-            else if (status === 'success') { dot.style.background = 'green'; text.style.color = 'green'; }
+            else if (status === 'success') { dot.style.background = '#2e7d32'; text.style.color = 'green'; }
             else { dot.style.background = 'red'; text.style.color = 'red'; }
         }
 
-        // 1. 抓取停車場 (使用 AllOrigins - 最穩定的公共 Proxy)
+        // 1. 抓取停車場
         async function fetchLots() {
             setStatus('lot', 'loading', '載入中...');
-            // 加上時間戳記防止快取
-            const proxy = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(API_LOTS + '?t=' + new Date().getTime());
+            // 嘗試用 corsproxy 抓取
+            const proxy = 'https://corsproxy.io/?' + encodeURIComponent(API_LOTS);
 
             try {
                 const res = await fetch(proxy);
@@ -110,20 +112,138 @@
                 if (list.length > 0) {
                     parkingData = parkingData.concat(list);
                     renderMap();
-                    setStatus('lot', 'success', `成功 (${list.length}筆)`);
+                    setStatus('lot', 'success', `OK (${list.length}筆)`);
                 } else throw new Error("無資料");
             } catch (e) {
                 console.warn(e);
-                setStatus('lot', 'error', '失敗(被擋/維護中)');
-                // 失敗時，生成一點模擬資料撐場面
-                generateDemoData(24.1618, 120.6469, '停車場');
+                // 停車場如果舊網址掛了，先不管，繼續抓路邊
+                setStatus('lot', 'error', '來源可能已更換');
+                
+                // 為了不讓畫面空白，這裡加一點停車場的模擬資料備用
+                generateDemoData(24.1618, 120.6469, '停車場(模擬)');
             }
             
-            // 接著抓路邊
+            // 接著抓路邊 (這是重點！)
             fetchRoadside();
         }
 
-        // 2. 抓取路邊車格 (使用 ThingProxy - 支援大檔案)
+        // 2. 抓取路邊車格 (使用你找到的新網址！)
         async function fetchRoadside() {
-            setStatus('road', 'loading', '下載中(檔案大)...');
-            const proxy = 'https://thingproxy.freeboard.io/fetch/' + API_ROADSIDE;
+            setStatus('road', 'loading', '下載新數據...');
+            
+            // 新版 API 也是跨域的，所以還是要套 Proxy，比較保險
+            // 使用 corsproxy.io
+            const proxy = 'https://corsproxy.io/?' + encodeURIComponent(API_ROADSIDE);
+
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 45000); // 45秒逾時
+
+                const res = await fetch(proxy, { signal: controller.signal });
+                clearTimeout(timeoutId);
+
+                if (!res.ok) throw new Error("HTTP Error " + res.status);
+                
+                // 解析新版資料
+                const data = await res.json();
+                
+                // 新版資料結構可能直接是 Array，或者是包在 result.records 裡，這裡做個判斷
+                let list = [];
+                if (Array.isArray(data)) list = data;
+                else if (data.result && data.result.records) list = data.result.records;
+                else if (data.data) list = data.data;
+                
+                if (list.length > 0) {
+                    parkingData = parkingData.concat(list);
+                    renderMap();
+                    setStatus('road', 'success', `成功 (${list.length}筆)`);
+                } else {
+                    throw new Error("無資料");
+                }
+            } catch (e) {
+                console.warn(e);
+                setStatus('road', 'error', '連線失敗/擋IP');
+                // 如果真的連新網址都失敗，最後一道防線：模擬資料
+                generateDemoData(24.1618, 120.6469, '路邊格(模擬)');
+            }
+        }
+
+        // 模擬資料 (最後防線)
+        function generateDemoData(lat, lng, type) {
+            for(let i=0; i<30; i++) {
+                let rLat = lat + (Math.random() - 0.5) * 0.015;
+                let rLng = lng + (Math.random() - 0.5) * 0.015;
+                parkingData.push({
+                    Name: `${type}-${i}`,
+                    Lat: rLat, Lng: rLng,
+                    AvailableSpace: Math.floor(Math.random() * 5),
+                    Type: '體驗資料'
+                });
+            }
+            renderMap();
+        }
+
+        function renderMap() {
+            markers.clearLayers();
+            const showOnlyAvailable = document.getElementById('filter-checkbox').checked;
+            let greenCount = 0, redCount = 0;
+
+            parkingData.forEach(spot => {
+                // 處理不同 API 的欄位名稱 (大小寫兼容)
+                let lat = spot.Y || spot.Latitude || spot.Lat || spot.lat;
+                let lng = spot.X || spot.Longitude || spot.Lng || spot.lng;
+                let name = spot.PSName || spot.ParkingLotName || spot.Name || spot.name || "車位";
+                let available = parseInt(spot.AvailableSpace || spot.AvailableCar || spot.availablecar || 0);
+                
+                if (available < 0) available = 0;
+                if (available > 0) greenCount++; else redCount++;
+                if (showOnlyAvailable && available === 0) return;
+
+                if (lat && lng) {
+                    const marker = L.marker([lat, lng], { icon: available > 0 ? greenIcon : redIcon });
+                    
+                    const navUrl = `http://googleusercontent.com/maps.google.com/?q=${lat},${lng}`;
+                    marker.bindPopup(`
+                        <div style="font-size:14px; text-align:center; min-width:160px;">
+                            <b style="font-size:15px;">${name}</b><br>
+                            <div style="margin:10px 0; font-size:16px;">
+                                ${available > 0 ? `<span style='color:#2e7d32; font-weight:bold;'>🟢 還有 ${available} 格</span>` : "<span style='color:#c62828; font-weight:bold;'>🔴 目前已滿</span>"}
+                            </div>
+                            <a href="${navUrl}" target="_blank" style="display:block; background:#4285F4; color:white; text-decoration:none; padding:8px; border-radius:5px; font-weight:bold;">
+                                <i class="fas fa-location-arrow"></i> Google 導航
+                            </a>
+                        </div>
+                    `);
+                    markers.addLayer(marker);
+                }
+            });
+            document.getElementById('count-green').textContent = greenCount;
+            document.getElementById('count-red').textContent = redCount;
+        }
+
+        function locateUser() {
+            map.locate({setView: true, maxZoom: 16, enableHighAccuracy: true});
+        }
+        map.on('locationfound', function(e) {
+            L.circleMarker(e.latlng, { radius: 8, fillColor: "#2196F3", color: "#fff", weight: 2, fillOpacity: 0.9 }).addTo(map);
+            L.circle(e.latlng, e.accuracy / 2).addTo(map);
+        });
+        map.on('locationerror', () => alert("定位失敗"));
+
+        async function searchLocation() {
+            const query = document.getElementById('search-input').value;
+            if (!query) return;
+            const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=台中市 ${query}`);
+            const data = await res.json();
+            if (data.length > 0) {
+                map.setView([data[0].lat, data[0].lon], 16);
+            } else alert("找不到地點");
+        }
+        function handleEnter(e) { if (e.key === 'Enter') searchLocation(); }
+        
+        // 啟動
+        fetchLots();
+        locateUser();
+    </script>
+</body>
+</html>
