@@ -185,8 +185,7 @@
 
         // --- 3. 設定 API (包含 CORS Proxy) ---
         const TARGET_API = 'https://datacenter.taichung.gov.tw/swagger/OpenData/791b8a4b-9e4a-4467-93b5-77cb63a4369f';
-        const PROXY_URL = 'https://corsproxy.io/?' + encodeURIComponent(TARGET_API);
-        
+        const PROXY_URL = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(TARGET_API);        
         let allParkingData = [];
         let countdown = 60;
         let updateInterval;
