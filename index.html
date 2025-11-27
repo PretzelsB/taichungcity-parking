@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>台中找車位神器 (終極修復版)</title>
+    <title>台中找車位 (多線路版)</title>
     
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.css" />
@@ -25,7 +25,7 @@
             border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.3); z-index: 1000; width: 220px; font-size: 14px;
         }
         .gps-btn {
-            position: absolute; bottom: 230px; right: 10px; width: 44px; height: 44px;
+            position: absolute; bottom: 250px; right: 10px; width: 44px; height: 44px;
             background: white; border-radius: 5px; box-shadow: 0 0 5px rgba(0,0,0,0.3);
             z-index: 1000; display: flex; align-items: center; justify-content: center;
             cursor: pointer; font-size: 20px; color: #333;
@@ -35,6 +35,11 @@
         .toggle-row { display: flex; align-items: center; margin-bottom: 8px; cursor: pointer; padding: 5px; background: #f1f8e9; border-radius: 5px; }
         .toggle-row input { margin-right: 8px; transform: scale(1.3); cursor: pointer; }
         .badge { background: #eee; padding: 2px 8px; border-radius: 10px; float: right; font-weight: bold; font-size: 12px; }
+        
+        /* 錯誤訊息顯示區 */
+        #debug-info {
+            font-size: 10px; color: red; margin-top: 5px; max-height: 50px; overflow-y: auto; display: none;
+        }
     </style>
 </head>
 <body>
@@ -46,7 +51,7 @@
     <div id="info-panel">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
             <strong style="font-size:16px;">🅿️ 台中停車通</strong>
-            <span id="update-timer" style="color:#666; font-size:12px;">載入中...</span>
+            <span id="update-timer" style="color:#666; font-size:12px;">準備中...</span>
         </div>
         <div class="toggle-row" onclick="document.getElementById('filter-checkbox').click()">
             <input type="checkbox" id="filter-checkbox" onchange="renderMap()" checked onclick="event.stopPropagation()">
@@ -56,6 +61,7 @@
             <div>🟢 空位充足 <span id="count-green" class="badge" style="color:#2e7d32">0</span></div>
             <div>🔴 已滿/未知 <span id="count-red" class="badge" style="color:#c62828">0</span></div>
         </div>
+        <div id="debug-info"></div>
         <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
     </div>
     <div id="map"></div>
@@ -74,54 +80,93 @@
         const greenIcon = new L.Icon({ iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png', shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png', iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41] });
         const redIcon = new L.Icon({ iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png', shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png', iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41] });
 
-        // --- AllOrigins API 設定 ---
+        // --- 設定多個代理線路 ---
         const TARGET_API = 'https://datacenter.taichung.gov.tw/swagger/OpenData/791b8a4b-9e4a-4467-93b5-77cb63a4369f';
-        const PROXY_URL = 'https://api.allorigins.win/get?url=' + encodeURIComponent(TARGET_API);
+        const PROXIES = [
+            // 線路 1: AllOrigins Raw
+            (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+            // 線路 2: CorsProxy.io
+            (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+            // 線路 3: ThingProxy
+            (url) => `https://thingproxy.freeboard.io/fetch/${url}`
+        ];
         
         let allParkingData = [];
         let countdown = 60;
         let updateInterval;
 
+        // 核心：嘗試抓取資料 (自動切換)
         async function fetchParkingData() {
             resetTimer(); 
             const timerLabel = document.getElementById('update-timer');
-            timerLabel.textContent = "更新中...";
-            timerLabel.style.color = "blue";
+            const debugDiv = document.getElementById('debug-info');
+            debugDiv.style.display = 'none';
+            debugDiv.innerText = '';
 
-            try {
-                // 1. 連線到代理伺服器
-                const response = await fetch(PROXY_URL);
-                if (!response.ok) throw new Error("代理連線錯誤: " + response.status);
+            let success = false;
 
-                // 2. 解析資料 (AllOrigins 會把資料包在 contents 裡)
-                const wrapper = await response.json();
-                if (!wrapper.contents) throw new Error("代理伺服器回傳空值");
-                
-                // 3. 處理內容 (如果是字串就轉 JSON，如果是物件就直接用)
-                if (typeof wrapper.contents === 'string') {
-                    allParkingData = JSON.parse(wrapper.contents);
-                } else {
-                    allParkingData = wrapper.contents;
+            // 迴圈嘗試所有線路
+            for (let i = 0; i < PROXIES.length; i++) {
+                if (success) break; // 如果成功了就跳出
+
+                const proxyUrl = PROXIES[i](TARGET_API);
+                timerLabel.textContent = `嘗試線路 ${i + 1}...`;
+                timerLabel.style.color = "blue";
+
+                try {
+                    // 設定 10 秒超時，避免卡太久
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+                    const response = await fetch(proxyUrl, { signal: controller.signal });
+                    clearTimeout(timeoutId);
+
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+                    const textData = await response.text();
+                    
+                    try {
+                        let jsonData = JSON.parse(textData);
+                        // AllOrigins 可能會回傳 contents 包裹
+                        if (jsonData.contents && typeof jsonData.contents === 'string') {
+                            jsonData = JSON.parse(jsonData.contents);
+                        } else if (jsonData.contents) {
+                            jsonData = jsonData.contents;
+                        }
+
+                        // 檢查是不是陣列
+                        if (Array.isArray(jsonData)) {
+                            allParkingData = jsonData;
+                            success = true; // 成功！
+                        } else if (jsonData.data && Array.isArray(jsonData.data)) {
+                            allParkingData = jsonData.data;
+                            success = true;
+                        } else {
+                            throw new Error("格式錯誤");
+                        }
+
+                    } catch (e) {
+                        throw new Error("JSON 解析失敗");
+                    }
+
+                } catch (error) {
+                    console.warn(`線路 ${i + 1} 失敗:`, error);
+                    debugDiv.style.display = 'block';
+                    debugDiv.innerText += `L${i+1} fail: ${error.message}\n`;
                 }
+            }
 
-                // 4. 容錯處理 (如果資料包在 .data 裡)
-                if (!Array.isArray(allParkingData)) {
-                     if (allParkingData.data) allParkingData = allParkingData.data;
-                     // 如果還是找不到陣列，但有東西，就先不報錯，看看後續
-                }
-
+            if (success) {
                 renderMap(); 
-                
                 const now = new Date();
                 timerLabel.textContent = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')} 更新`;
                 timerLabel.style.color = "#666";
-
-            } catch (error) {
-                console.error("Fetch error details:", error);
-                timerLabel.textContent = "⚠️ 連線失敗";
+                debugDiv.style.display = 'none'; // 隱藏錯誤訊息
+            } else {
+                timerLabel.textContent = "⚠️ 全部連線失敗";
                 timerLabel.style.color = "red";
-                // 失敗後 5 秒自動重試
-                setTimeout(fetchParkingData, 5000); 
+                // 15 秒後重試
+                setTimeout(fetchParkingData, 15000); 
             }
         }
 
@@ -131,7 +176,6 @@
             let greenCount = 0;
             let redCount = 0;
             
-            // 確保 allParkingData 是陣列才執行 forEach
             if (!Array.isArray(allParkingData)) return;
 
             allParkingData.forEach(spot => {
@@ -173,7 +217,7 @@
             fill.style.transition = 'width 1s linear';
             updateInterval = setInterval(() => {
                 countdown--;
-                const fill = document.getElementById('progress-fill'); // 重新抓取避免錯誤
+                const fill = document.getElementById('progress-fill'); 
                 if(fill) {
                     const percent = (countdown / 60) * 100;
                     fill.style.width = `${percent}%`;
