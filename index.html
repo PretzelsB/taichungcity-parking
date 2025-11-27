@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>台中找車位 (多線路版)</title>
+    <title>台中找車位 (終極穩定版)</title>
     
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.css" />
@@ -22,7 +22,7 @@
         .search-btn { padding: 10px 15px; border: none; background: #008CBA; color: white; border-radius: 0 5px 5px 0; cursor: pointer; font-size: 18px; }
         #info-panel {
             position: absolute; bottom: 30px; right: 10px; background: white; padding: 12px;
-            border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.3); z-index: 1000; width: 220px; font-size: 14px;
+            border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.3); z-index: 1000; width: 240px; font-size: 14px;
         }
         .gps-btn {
             position: absolute; bottom: 250px; right: 10px; width: 44px; height: 44px;
@@ -35,11 +35,7 @@
         .toggle-row { display: flex; align-items: center; margin-bottom: 8px; cursor: pointer; padding: 5px; background: #f1f8e9; border-radius: 5px; }
         .toggle-row input { margin-right: 8px; transform: scale(1.3); cursor: pointer; }
         .badge { background: #eee; padding: 2px 8px; border-radius: 10px; float: right; font-weight: bold; font-size: 12px; }
-        
-        /* 錯誤訊息顯示區 */
-        #debug-info {
-            font-size: 10px; color: red; margin-top: 5px; max-height: 50px; overflow-y: auto; display: none;
-        }
+        #debug-info { font-size: 11px; color: #d32f2f; margin-top: 5px; line-height: 1.4; display: none; background: #ffebee; padding: 5px; border-radius: 4px;}
     </style>
 </head>
 <body>
@@ -51,7 +47,7 @@
     <div id="info-panel">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
             <strong style="font-size:16px;">🅿️ 台中停車通</strong>
-            <span id="update-timer" style="color:#666; font-size:12px;">準備中...</span>
+            <span id="data-source-tag" style="font-size:10px; background:#e3f2fd; color:#1565c0; padding:2px 5px; border-radius:4px;">載入中</span>
         </div>
         <div class="toggle-row" onclick="document.getElementById('filter-checkbox').click()">
             <input type="checkbox" id="filter-checkbox" onchange="renderMap()" checked onclick="event.stopPropagation()">
@@ -80,93 +76,82 @@
         const greenIcon = new L.Icon({ iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png', shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png', iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41] });
         const redIcon = new L.Icon({ iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png', shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png', iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41] });
 
-        // --- 設定多個代理線路 ---
-        const TARGET_API = 'https://datacenter.taichung.gov.tw/swagger/OpenData/791b8a4b-9e4a-4467-93b5-77cb63a4369f';
-        const PROXIES = [
-            // 線路 1: AllOrigins Raw
-            (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-            // 線路 2: CorsProxy.io
-            (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-            // 線路 3: ThingProxy
-            (url) => `https://thingproxy.freeboard.io/fetch/${url}`
-        ];
-        
-        let allParkingData = [];
-        let countdown = 60;
-        let updateInterval;
+        // --- 資料來源設定 ---
+        // 1. 路邊停車 (檔案大，容易失敗)
+        const API_ROADSIDE = 'https://datacenter.taichung.gov.tw/swagger/OpenData/791b8a4b-9e4a-4467-93b5-77cb63a4369f';
+        // 2. 路外停車場 (檔案小，備案)
+        const API_PARKINGLOT = 'https://datacenter.taichung.gov.tw/swagger/OpenData/e7b85d37-252f-45b0-8c2e-40439641770e';
 
-        // 核心：嘗試抓取資料 (自動切換)
+        let allParkingData = [];
+        let updateInterval;
+        let isFallbackMode = false; // 是否正在使用備案
+
+        // 核心抓取函式
         async function fetchParkingData() {
             resetTimer(); 
-            const timerLabel = document.getElementById('update-timer');
+            const tag = document.getElementById('data-source-tag');
             const debugDiv = document.getElementById('debug-info');
             debugDiv.style.display = 'none';
-            debugDiv.innerText = '';
 
-            let success = false;
+            // 1. 先嘗試抓「路邊停車」 (使用 AllOrigins Get 模式，這是最穩的)
+            tag.textContent = "更新路邊車格...";
+            const proxyUrl = 'https://api.allorigins.win/get?url=' + encodeURIComponent(API_ROADSIDE);
 
-            // 迴圈嘗試所有線路
-            for (let i = 0; i < PROXIES.length; i++) {
-                if (success) break; // 如果成功了就跳出
+            try {
+                // 設定 30 秒超時 (因為檔案大)
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-                const proxyUrl = PROXIES[i](TARGET_API);
-                timerLabel.textContent = `嘗試線路 ${i + 1}...`;
-                timerLabel.style.color = "blue";
+                const response = await fetch(proxyUrl, { signal: controller.signal });
+                clearTimeout(timeoutId);
 
-                try {
-                    // 設定 10 秒超時，避免卡太久
-                    const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 10000);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const wrapper = await response.json();
+                if (!wrapper.contents) throw new Error("無內容");
+                
+                let dataStr = wrapper.contents;
+                let jsonData = (typeof dataStr === 'string') ? JSON.parse(dataStr) : dataStr;
 
-                    const response = await fetch(proxyUrl, { signal: controller.signal });
-                    clearTimeout(timeoutId);
+                // 解析資料 (路邊停車通常是直接陣列，或是包在 data)
+                if (Array.isArray(jsonData)) allParkingData = jsonData;
+                else if (jsonData.data && Array.isArray(jsonData.data)) allParkingData = jsonData.data;
+                else throw new Error("格式不符");
 
-                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                isFallbackMode = false;
+                tag.textContent = "路邊車格 (即時)";
+                renderMap();
 
-                    const textData = await response.text();
-                    
-                    try {
-                        let jsonData = JSON.parse(textData);
-                        // AllOrigins 可能會回傳 contents 包裹
-                        if (jsonData.contents && typeof jsonData.contents === 'string') {
-                            jsonData = JSON.parse(jsonData.contents);
-                        } else if (jsonData.contents) {
-                            jsonData = jsonData.contents;
-                        }
-
-                        // 檢查是不是陣列
-                        if (Array.isArray(jsonData)) {
-                            allParkingData = jsonData;
-                            success = true; // 成功！
-                        } else if (jsonData.data && Array.isArray(jsonData.data)) {
-                            allParkingData = jsonData.data;
-                            success = true;
-                        } else {
-                            throw new Error("格式錯誤");
-                        }
-
-                    } catch (e) {
-                        throw new Error("JSON 解析失敗");
-                    }
-
-                } catch (error) {
-                    console.warn(`線路 ${i + 1} 失敗:`, error);
-                    debugDiv.style.display = 'block';
-                    debugDiv.innerText += `L${i+1} fail: ${error.message}\n`;
-                }
+            } catch (error) {
+                console.warn("路邊停車抓取失敗，切換至停車場備案:", error);
+                debugDiv.style.display = 'block';
+                debugDiv.innerHTML = `⚠️ 路邊車格連線逾時<br>已自動切換顯示「停車場」`;
+                
+                // 失敗了！馬上嘗試抓「路外停車場」
+                await fetchParkingLotData();
             }
+        }
 
-            if (success) {
-                renderMap(); 
-                const now = new Date();
-                timerLabel.textContent = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')} 更新`;
-                timerLabel.style.color = "#666";
-                debugDiv.style.display = 'none'; // 隱藏錯誤訊息
-            } else {
-                timerLabel.textContent = "⚠️ 全部連線失敗";
-                timerLabel.style.color = "red";
-                // 15 秒後重試
-                setTimeout(fetchParkingData, 15000); 
+        // 備案：抓取路外停車場
+        async function fetchParkingLotData() {
+            const tag = document.getElementById('data-source-tag');
+            // 停車場檔案小，比較不會失敗
+            const proxyUrl = 'https://api.allorigins.win/get?url=' + encodeURIComponent(API_PARKINGLOT);
+            
+            try {
+                const response = await fetch(proxyUrl);
+                const wrapper = await response.json();
+                let jsonData = (typeof wrapper.contents === 'string') ? JSON.parse(wrapper.contents) : wrapper.contents;
+
+                if (Array.isArray(jsonData)) allParkingData = jsonData;
+                else if (jsonData.data) allParkingData = jsonData.data;
+
+                isFallbackMode = true;
+                tag.textContent = "路外停車場 (備案)";
+                renderMap();
+
+            } catch (e) {
+                document.getElementById('debug-info').innerHTML += `<br>❌ 全部連線失敗，請稍後再試`;
             }
         }
 
@@ -179,12 +164,13 @@
             if (!Array.isArray(allParkingData)) return;
 
             allParkingData.forEach(spot => {
-                let lat = spot.Y || spot.Latitude;
-                let lng = spot.X || spot.Longitude;
-                let name = spot.PSName || spot.ParkingLotName || "車位";
-                let available = parseInt(spot.AvailableSpace || 0);
+                // 欄位名稱相容性處理 (路邊跟路外欄位不同)
+                let lat = spot.Y || spot.Latitude || spot.Lat;
+                let lng = spot.X || spot.Longitude || spot.Lng;
+                let name = spot.PSName || spot.ParkingLotName || spot.Name || "車位";
+                let available = parseInt(spot.AvailableSpace || spot.AvailableCar || 0);
+                
                 if (available < 0) available = 0;
-
                 if (available > 0) greenCount++; else redCount++;
                 if (showOnlyAvailable && available === 0) return;
 
@@ -211,7 +197,7 @@
 
         function resetTimer() {
             if (updateInterval) clearInterval(updateInterval);
-            countdown = 60;
+            let countdown = 60;
             const fill = document.getElementById('progress-fill');
             fill.style.transition = 'none'; fill.style.width = '100%'; void fill.offsetWidth; 
             fill.style.transition = 'width 1s linear';
