@@ -1,39 +1,87 @@
-<script>
-        // --- 1. 初始化地圖 ---
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>台中找車位神器 (終極修復版)</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.Default.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        body { margin: 0; padding: 0; font-family: "Microsoft JhengHei", sans-serif; overflow: hidden; }
+        #map { height: 100vh; width: 100%; z-index: 1; }
+        .search-container {
+            position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 1000;
+            width: 90%; max-width: 400px; display: flex; box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            border-radius: 5px; background: white;
+        }
+        .search-input { flex: 1; padding: 12px; border: none; border-radius: 5px 0 0 5px; outline: none; font-size: 16px; }
+        .search-btn { padding: 10px 15px; border: none; background: #008CBA; color: white; border-radius: 0 5px 5px 0; cursor: pointer; font-size: 18px; }
+        #info-panel {
+            position: absolute; bottom: 30px; right: 10px; background: white; padding: 12px;
+            border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.3); z-index: 1000; width: 220px; font-size: 14px;
+        }
+        .gps-btn {
+            position: absolute; bottom: 230px; right: 10px; width: 44px; height: 44px;
+            background: white; border-radius: 5px; box-shadow: 0 0 5px rgba(0,0,0,0.3);
+            z-index: 1000; display: flex; align-items: center; justify-content: center;
+            cursor: pointer; font-size: 20px; color: #333;
+        }
+        .progress-bar { height: 4px; background: #eee; margin-top: 10px; border-radius: 2px; overflow: hidden; }
+        .progress-fill { height: 100%; background: #008CBA; width: 100%; transition: width 1s linear; }
+        .toggle-row { display: flex; align-items: center; margin-bottom: 8px; cursor: pointer; padding: 5px; background: #f1f8e9; border-radius: 5px; }
+        .toggle-row input { margin-right: 8px; transform: scale(1.3); cursor: pointer; }
+        .badge { background: #eee; padding: 2px 8px; border-radius: 10px; float: right; font-weight: bold; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class="search-container">
+        <input type="text" id="search-input" class="search-input" placeholder="輸入地點 (如: 勤美)..." onkeypress="handleEnter(event)">
+        <button class="search-btn" onclick="searchLocation()"><i class="fas fa-search"></i></button>
+    </div>
+    <div class="gps-btn" onclick="locateUser()"><i class="fas fa-crosshairs"></i></div>
+    <div id="info-panel">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <strong style="font-size:16px;">🅿️ 台中停車通</strong>
+            <span id="update-timer" style="color:#666; font-size:12px;">載入中...</span>
+        </div>
+        <div class="toggle-row" onclick="document.getElementById('filter-checkbox').click()">
+            <input type="checkbox" id="filter-checkbox" onchange="renderMap()" checked onclick="event.stopPropagation()">
+            <label style="color:#2e7d32; font-weight:bold; cursor:pointer;">只顯示空位</label>
+        </div>
+        <div style="font-size:13px; color:#555; margin-top:8px; line-height: 1.6;">
+            <div>🟢 空位充足 <span id="count-green" class="badge" style="color:#2e7d32">0</span></div>
+            <div>🔴 已滿/未知 <span id="count-red" class="badge" style="color:#c62828">0</span></div>
+        </div>
+        <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+    </div>
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet.markercluster/dist/leaflet.markercluster.js"></script>
+
+    <script>
         const map = L.map('map', { zoomControl: false }).setView([24.1618, 120.6469], 14);
         L.control.zoom({ position: 'bottomright' }).addTo(map);
-
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap'
-        }).addTo(map);
-
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(map);
         const markers = L.markerClusterGroup({ disableClusteringAtZoom: 17 });
         map.addLayer(markers);
-
         let userMarker = null;
 
-        // --- 2. 定義圖示 ---
-        const greenIcon = new L.Icon({
-            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
-            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-            iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41]
-        });
-        const redIcon = new L.Icon({
-            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
-            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-            iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41]
-        });
+        const greenIcon = new L.Icon({ iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png', shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png', iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41] });
+        const redIcon = new L.Icon({ iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png', shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png', iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41] });
 
-        // --- 3. 設定 API (改用 AllOrigins JSON 模式，相容性最高) ---
+        // --- AllOrigins API 設定 ---
         const TARGET_API = 'https://datacenter.taichung.gov.tw/swagger/OpenData/791b8a4b-9e4a-4467-93b5-77cb63a4369f';
-        // 使用 get?url= 模式，它會把資料包在 contents 裡面回傳
         const PROXY_URL = 'https://api.allorigins.win/get?url=' + encodeURIComponent(TARGET_API);
         
         let allParkingData = [];
         let countdown = 60;
         let updateInterval;
 
-        // --- 4. 抓取資料函式 (重要修改) ---
         async function fetchParkingData() {
             resetTimer(); 
             const timerLabel = document.getElementById('update-timer');
@@ -41,28 +89,25 @@
             timerLabel.style.color = "blue";
 
             try {
-                // 1. 發送請求給代理伺服器
+                // 1. 連線到代理伺服器
                 const response = await fetch(PROXY_URL);
                 if (!response.ok) throw new Error("代理連線錯誤: " + response.status);
 
-                // 2. 取得包裝過的資料 (Wrapper)
+                // 2. 解析資料 (AllOrigins 會把資料包在 contents 裡)
                 const wrapper = await response.json();
-                
-                // 3. 從 wrapper.contents 取出真正的資料字串並轉成 JSON
                 if (!wrapper.contents) throw new Error("代理伺服器回傳空值");
                 
-                // 這裡有時候會回傳字串，有時候是物件，做個防呆
+                // 3. 處理內容 (如果是字串就轉 JSON，如果是物件就直接用)
                 if (typeof wrapper.contents === 'string') {
                     allParkingData = JSON.parse(wrapper.contents);
                 } else {
                     allParkingData = wrapper.contents;
                 }
 
-                // 4. 檢查資料是否有效
+                // 4. 容錯處理 (如果資料包在 .data 裡)
                 if (!Array.isArray(allParkingData)) {
-                     // 嘗試尋找是否在某個屬性下 (例如 .data)
                      if (allParkingData.data) allParkingData = allParkingData.data;
-                     else throw new Error("資料格式不正確 (非陣列)");
+                     // 如果還是找不到陣列，但有東西，就先不報錯，看看後續
                 }
 
                 renderMap(); 
@@ -75,22 +120,19 @@
                 console.error("Fetch error details:", error);
                 timerLabel.textContent = "⚠️ 連線失敗";
                 timerLabel.style.color = "red";
-                
-                // 顯示更清楚的錯誤訊息，方便除錯
-                // alert("讀取失敗 (AllOrigins):\n" + error.message);
-                
-                // 失敗後 5 秒重試
+                // 失敗後 5 秒自動重試
                 setTimeout(fetchParkingData, 5000); 
             }
         }
 
-        // --- 5. 渲染地圖函式 ---
         function renderMap() {
             markers.clearLayers();
             const showOnlyAvailable = document.getElementById('filter-checkbox').checked;
-            
             let greenCount = 0;
             let redCount = 0;
+            
+            // 確保 allParkingData 是陣列才執行 forEach
+            if (!Array.isArray(allParkingData)) return;
 
             allParkingData.forEach(spot => {
                 let lat = spot.Y || spot.Latitude;
@@ -99,29 +141,19 @@
                 let available = parseInt(spot.AvailableSpace || 0);
                 if (available < 0) available = 0;
 
-                if (available > 0) greenCount++;
-                else redCount++;
-
+                if (available > 0) greenCount++; else redCount++;
                 if (showOnlyAvailable && available === 0) return;
 
                 if (lat && lng) {
-                    const marker = L.marker([lat, lng], {
-                        icon: available > 0 ? greenIcon : redIcon
-                    });
-                    
+                    const marker = L.marker([lat, lng], { icon: available > 0 ? greenIcon : redIcon });
                     const navUrl = `http://googleusercontent.com/maps.google.com/?q=${lat},${lng}`;
-
                     marker.bindPopup(`
                         <div style="font-size:14px; text-align:center; min-width:160px;">
                             <b style="font-size:15px;">${name}</b><br>
                             <div style="margin:10px 0; font-size:16px;">
-                                ${available > 0 
-                                    ? `<span style='color:#2e7d32; font-weight:bold;'>🟢 還有 ${available} 格</span>` 
-                                    : "<span style='color:#c62828; font-weight:bold;'>🔴 目前已滿</span>"}
+                                ${available > 0 ? `<span style='color:#2e7d32; font-weight:bold;'>🟢 還有 ${available} 格</span>` : "<span style='color:#c62828; font-weight:bold;'>🔴 目前已滿</span>"}
                             </div>
-                            <a href="${navUrl}" 
-                               target="_blank" 
-                               style="display:block; background:#4285F4; color:white; text-decoration:none; padding:8px; border-radius:5px; font-weight:bold;">
+                            <a href="${navUrl}" target="_blank" style="display:block; background:#4285F4; color:white; text-decoration:none; padding:8px; border-radius:5px; font-weight:bold;">
                                 <i class="fas fa-location-arrow"></i> Google 導航
                             </a>
                         </div>
@@ -129,65 +161,48 @@
                     markers.addLayer(marker);
                 }
             });
-
             document.getElementById('count-green').textContent = greenCount;
             document.getElementById('count-red').textContent = redCount;
         }
 
-        // --- 6. 倒數計時器 ---
         function resetTimer() {
             if (updateInterval) clearInterval(updateInterval);
             countdown = 60;
             const fill = document.getElementById('progress-fill');
-            fill.style.transition = 'none';
-            fill.style.width = '100%';
-            void fill.offsetWidth; 
+            fill.style.transition = 'none'; fill.style.width = '100%'; void fill.offsetWidth; 
             fill.style.transition = 'width 1s linear';
-            
             updateInterval = setInterval(() => {
                 countdown--;
-                const percent = (countdown / 60) * 100;
-                fill.style.width = `${percent}%`;
-
-                if (countdown <= 0) {
-                    clearInterval(updateInterval);
-                    fetchParkingData();
+                const fill = document.getElementById('progress-fill'); // 重新抓取避免錯誤
+                if(fill) {
+                    const percent = (countdown / 60) * 100;
+                    fill.style.width = `${percent}%`;
                 }
+                if (countdown <= 0) { clearInterval(updateInterval); fetchParkingData(); }
             }, 1000);
         }
 
-        // --- 7. GPS 定位 ---
         function locateUser() {
             const btn = document.querySelector('.gps-btn');
             btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; 
-
             map.locate({setView: true, maxZoom: 16, enableHighAccuracy: true});
         }
-
         map.on('locationfound', function(e) {
             document.querySelector('.gps-btn').innerHTML = '<i class="fas fa-crosshairs"></i>';
             document.querySelector('.gps-btn').classList.add('gps-active');
-
             if (userMarker) map.removeLayer(userMarker);
-            userMarker = L.circleMarker(e.latlng, {
-                radius: 8, fillColor: "#2196F3", color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.9
-            }).addTo(map);
+            userMarker = L.circleMarker(e.latlng, { radius: 8, fillColor: "#2196F3", color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.9 }).addTo(map);
             L.circle(e.latlng, e.accuracy / 2, { color: '#2196F3', fillOpacity: 0.1 }).addTo(map);
         });
-
         map.on('locationerror', function(e) {
             alert("無法取得位置，請確認瀏覽器 GPS 權限已開啟。");
             document.querySelector('.gps-btn').innerHTML = '<i class="fas fa-crosshairs"></i>';
         });
-
-        // --- 8. 地點搜尋 ---
         async function searchLocation() {
             const input = document.getElementById('search-input');
             const query = input.value.trim();
             if (!query) return;
-
             const searchUrl = `https://nominatim.openstreetmap.org/search?format=json&q=台中市 ${query}`;
-
             try {
                 const res = await fetch(searchUrl);
                 const data = await res.json();
@@ -195,19 +210,12 @@
                     const lat = data[0].lat;
                     const lon = data[0].lon;
                     map.setView([lat, lon], 16);
-                } else {
-                    alert("找不到地點，請嘗試更具體的名稱");
-                }
-            } catch (e) {
-                alert("搜尋服務繁忙，請稍後再試");
-            }
+                } else { alert("找不到地點，請嘗試更具體的名稱"); }
+            } catch (e) { alert("搜尋服務繁忙，請稍後再試"); }
         }
+        function handleEnter(e) { if (e.key === 'Enter') searchLocation(); }
 
-        function handleEnter(e) {
-            if (e.key === 'Enter') searchLocation();
-        }
-
-        // 啟動程式
         fetchParkingData();
-
     </script>
+</body>
+</html>
