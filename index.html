@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>台中找車位 (輕量穩定版)</title>
+    <title>台中找車位 (半徑搜尋版)</title>
     
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.css" />
@@ -31,38 +31,33 @@
             cursor: pointer; font-size: 20px; color: #333;
         }
         .badge { background: #eee; padding: 2px 8px; border-radius: 10px; float: right; font-weight: bold; font-size: 12px; }
-        .status-bar { margin-top: 5px; font-size: 12px; color: #666; border-top: 1px solid #eee; padding-top: 5px;}
-        .source-indicator { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+        #loading-msg { color: blue; font-weight: bold; margin-top: 5px;}
     </style>
 </head>
 <body>
     <div class="search-container">
-        <input type="text" id="search-input" class="search-input" placeholder="輸入地點 (如: 勤美)..." onkeypress="handleEnter(event)">
+        <input type="text" id="search-input" class="search-input" placeholder="搜尋地點..." onkeypress="handleEnter(event)">
         <button class="search-btn" onclick="searchLocation()"><i class="fas fa-search"></i></button>
     </div>
     <div class="gps-btn" onclick="locateUser()"><i class="fas fa-crosshairs"></i></div>
     
     <div id="info-panel">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-            <strong style="font-size:16px;">🅿️ 台中停車通</strong>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <strong style="font-size:16px;">🅿️ 附近車位 (1km)</strong>
         </div>
         
-        <div style="margin-bottom:10px; background:#f5f5f5; padding:8px; border-radius:5px;">
-            <label style="display:flex; align-items:center; cursor:pointer;">
+        <div style="margin:10px 0;">
+            <label style="display:flex; align-items:center;">
                 <input type="checkbox" id="filter-checkbox" onchange="renderMap()" checked style="transform:scale(1.3); margin-right:8px;">
                 <span style="color:#2e7d32; font-weight:bold;">只顯示空位</span>
             </label>
         </div>
 
-        <div style="font-size:13px; color:#555; line-height: 1.8;">
-            <div>🟢 車位充足 <span id="count-green" class="badge" style="color:#2e7d32">0</span></div>
-            <div>🔴 已滿/未知 <span id="count-red" class="badge" style="color:#c62828">0</span></div>
+        <div>
+            <div>🟢 有車位 <span id="count-green" class="badge" style="color:#2e7d32">0</span></div>
+            <div style="margin-top:5px;">🔴 已滿 <span id="count-red" class="badge" style="color:#c62828">0</span></div>
         </div>
-
-        <div class="status-bar">
-            <div><span class="source-indicator" id="lot-status" style="background:gray;"></span> 停車場: <span id="lot-msg">載入中...</span></div>
-            <div style="margin-top:2px;"><span class="source-indicator" id="road-status" style="background:gray;"></span> 路邊格: <span id="road-msg">等待中...</span></div>
-        </div>
+        <div id="loading-msg">請先定位或搜尋...</div>
     </div>
 
     <div id="map"></div>
@@ -74,93 +69,44 @@
         const map = L.map('map', { zoomControl: false }).setView([24.1618, 120.6469], 14);
         L.control.zoom({ position: 'bottomright' }).addTo(map);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(map);
-        const markers = L.markerClusterGroup({ disableClusteringAtZoom: 17 });
+        const markers = L.markerClusterGroup();
         map.addLayer(markers);
-        let userMarker = null;
 
         const greenIcon = new L.Icon({ iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png', shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png', iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41] });
         const redIcon = new L.Icon({ iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png', shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png', iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41] });
 
-        // API URL
-        const API_LOTS = 'https://datacenter.taichung.gov.tw/swagger/OpenData/e7b85d37-252f-45b0-8c2e-40439641770e';
-        const API_ROADSIDE = 'https://datacenter.taichung.gov.tw/swagger/OpenData/791b8a4b-9e4a-4467-93b5-77cb63a4369f';
+        // ⚠️ 請在這裡貼上你剛剛複製的 Google Apps Script 網址 ⚠️
+        const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxS0yn6aTkep0VbN6TxMEn-QEPuqT5By2e1a84-dfqDDy4jEIsG_ErcqDV1hqnLwIO5Cw/exec'; 
 
-        // 兩個資料桶
-        let lotsData = [];
-        let roadsideData = [];
 
-        // 1. 抓取停車場 (小檔案，優先執行)
-        async function fetchLots() {
-            updateStatus('lot', 'loading', '更新中...');
-            // 使用 Raw 模式，相容性最高
-            const proxy = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(API_LOTS);
+        let allParkingData = [];
+        let userMarker = null;
+
+        // 核心：根據中心點抓資料
+        async function fetchNearbyData(lat, lng) {
+            const msg = document.getElementById('loading-msg');
+            msg.textContent = "🔍 搜尋附近 1km 車位...";
+            msg.style.color = "blue";
             
+            // 呼叫你的 Google Script
+            const apiUrl = `${GOOGLE_SCRIPT_URL}?lat=${lat}&lng=${lng}&r=1.0`;
+
             try {
-                const res = await fetch(proxy);
-                if(!res.ok) throw new Error("Network Error");
+                const res = await fetch(apiUrl);
                 const data = await res.json();
                 
-                // 解析資料結構
-                if(Array.isArray(data)) lotsData = data;
-                else if(data.data) lotsData = data.data;
+                if (data.error) throw new Error(data.error);
                 
-                updateStatus('lot', 'success', `成功 (${lotsData.length}筆)`);
+                allParkingData = data;
                 renderMap();
+                msg.textContent = `✅ 找到 ${allParkingData.length} 個車位`;
+                msg.style.color = "green";
                 
-                // 停車場成功後，才去抓路邊停車，避免同時塞車
-                fetchRoadside(); 
-            } catch(e) {
+            } catch (e) {
                 console.error(e);
-                updateStatus('lot', 'error', '連線失敗');
-                // 就算停車場失敗，也要試試看路邊
-                fetchRoadside();
-            }
-        }
-
-        // 2. 抓取路邊車格 (大檔案，容易失敗，設為次要)
-        async function fetchRoadside() {
-            updateStatus('road', 'loading', '下載中(檔案大)...');
-            
-            // 這裡使用 thingproxy，對於大檔案支援度較好
-            const proxy = 'https://thingproxy.freeboard.io/fetch/' + API_ROADSIDE;
-
-            try {
-                // 設定 40 秒超時，給它足夠時間
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 40000);
-                
-                const res = await fetch(proxy, { signal: controller.signal });
-                clearTimeout(timeoutId);
-                
-                if(!res.ok) throw new Error("Network Error");
-                const data = await res.json();
-
-                if(Array.isArray(data)) roadsideData = data;
-                else if(data.data) roadsideData = data.data;
-
-                updateStatus('road', 'success', `成功 (${roadsideData.length}筆)`);
-                renderMap();
-            } catch(e) {
-                console.warn(e);
-                updateStatus('road', 'error', '檔案過大/逾時');
-            }
-        }
-
-        // 狀態更新小工具
-        function updateStatus(type, status, msg) {
-            const indicator = document.getElementById(`${type}-status`);
-            const text = document.getElementById(`${type}-msg`);
-            text.textContent = msg;
-            
-            if(status === 'loading') {
-                indicator.style.background = 'orange';
-                text.style.color = 'orange';
-            } else if(status === 'success') {
-                indicator.style.background = '#2e7d32';
-                text.style.color = '#2e7d32';
-            } else {
-                indicator.style.background = '#c62828';
-                text.style.color = '#c62828';
+                msg.textContent = "❌ 載入失敗 (請檢查網址)";
+                msg.style.color = "red";
+                alert("抓取失敗，請確認你有在程式碼中填入正確的 Google Script 網址！");
             }
         }
 
@@ -169,37 +115,20 @@
             const showOnlyAvailable = document.getElementById('filter-checkbox').checked;
             let greenCount = 0;
             let redCount = 0;
-            
-            // 合併兩個資料來源
-            const allData = [...lotsData, ...roadsideData];
 
-            allData.forEach(spot => {
-                let lat = spot.Y || spot.Latitude || spot.Lat;
-                let lng = spot.X || spot.Longitude || spot.Lng;
-                let name = spot.PSName || spot.ParkingLotName || spot.Name || "車位";
-                // 處理不同 API 的欄位名稱差異
-                let available = 0;
-                if(spot.AvailableSpace !== undefined) available = parseInt(spot.AvailableSpace);
-                else if(spot.AvailableCar !== undefined) available = parseInt(spot.AvailableCar);
-
+            allParkingData.forEach(spot => {
+                let lat = spot.Y || spot.Latitude;
+                let lng = spot.X || spot.Longitude;
+                let name = spot.PSName || spot.ParkingLotName || "車位";
+                let available = parseInt(spot.AvailableSpace || 0);
                 if (available < 0) available = 0;
+
                 if (available > 0) greenCount++; else redCount++;
                 if (showOnlyAvailable && available === 0) return;
 
                 if (lat && lng) {
                     const marker = L.marker([lat, lng], { icon: available > 0 ? greenIcon : redIcon });
-                    const navUrl = `http://googleusercontent.com/maps.google.com/?q=${lat},${lng}`;
-                    marker.bindPopup(`
-                        <div style="font-size:14px; text-align:center; min-width:160px;">
-                            <b style="font-size:15px;">${name}</b><br>
-                            <div style="margin:10px 0; font-size:16px;">
-                                ${available > 0 ? `<span style='color:#2e7d32; font-weight:bold;'>🟢 還有 ${available} 格</span>` : "<span style='color:#c62828; font-weight:bold;'>🔴 目前已滿</span>"}
-                            </div>
-                            <a href="${navUrl}" target="_blank" style="display:block; background:#4285F4; color:white; text-decoration:none; padding:8px; border-radius:5px; font-weight:bold;">
-                                <i class="fas fa-location-arrow"></i> Google 導航
-                            </a>
-                        </div>
-                    `);
+                    marker.bindPopup(`<b>${name}</b><br>${available > 0 ? `<span style='color:green'>🟢 ${available} 格</span>` : "<span style='color:red'>🔴 已滿</span>"}<br><a href="http://googleusercontent.com/maps.google.com/?q=${lat},${lng}" target="_blank">導航</a>`);
                     markers.addLayer(marker);
                 }
             });
@@ -207,36 +136,39 @@
             document.getElementById('count-red').textContent = redCount;
         }
 
-        // GPS 與 搜尋功能
+        // 定位與搜尋
         function locateUser() {
-            const btn = document.querySelector('.gps-btn');
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; 
+            document.getElementById('loading-msg').textContent = "📍 定位中...";
             map.locate({setView: true, maxZoom: 16, enableHighAccuracy: true});
         }
+        
         map.on('locationfound', function(e) {
-            document.querySelector('.gps-btn').innerHTML = '<i class="fas fa-crosshairs"></i>';
             if (userMarker) map.removeLayer(userMarker);
-            userMarker = L.circleMarker(e.latlng, { radius: 8, fillColor: "#2196F3", color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.9 }).addTo(map);
-            L.circle(e.latlng, e.accuracy / 2, { color: '#2196F3', fillOpacity: 0.1 }).addTo(map);
+            userMarker = L.circleMarker(e.latlng, { radius: 8, fillColor: "#2196F3", color: "#fff", weight: 2, fillOpacity: 0.9 }).addTo(map);
+            L.circle(e.latlng, e.accuracy / 2).addTo(map);
+            
+            // 定位成功後，立刻抓附近的資料
+            fetchNearbyData(e.latlng.lat, e.latlng.lng);
         });
-        map.on('locationerror', function(e) {
-            alert("無法定位"); document.querySelector('.gps-btn').innerHTML = '<i class="fas fa-crosshairs"></i>';
-        });
+        
+        map.on('locationerror', () => alert("定位失敗"));
+
         async function searchLocation() {
-            const input = document.getElementById('search-input');
-            const query = input.value.trim();
+            const query = document.getElementById('search-input').value;
             if (!query) return;
-            try {
-                const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=台中市 ${query}`);
-                const data = await res.json();
-                if (data && data.length > 0) map.setView([data[0].lat, data[0].lon], 16);
-                else alert("找不到地點");
-            } catch (e) { alert("搜尋失敗"); }
+            const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=台中市 ${query}`);
+            const data = await res.json();
+            if (data.length > 0) {
+                const lat = data[0].lat, lon = data[0].lon;
+                map.setView([lat, lon], 16);
+                // 搜尋後，抓那個地點附近的資料
+                fetchNearbyData(lat, lon);
+            } else alert("找不到地點");
         }
         function handleEnter(e) { if (e.key === 'Enter') searchLocation(); }
-
-        // 開始抓取
-        fetchLots();
+        
+        // 一開始先定位
+        locateUser();
     </script>
 </body>
 </html>
